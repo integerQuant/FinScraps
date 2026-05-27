@@ -28,5 +28,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           ANBIMA_IRTS_HF_REPO_ID: rodrigomtorresb/anbima-irts
           ANBIMA_IRTS_HF_FILENAME: latest.parquet
+          ANBIMA_IDKA_HF_REPO_ID: rodrigomtorresb/anbima-idka
+          ANBIMA_IDKA_HF_FILENAME: latest.parquet
         run: |
           python auto_scrape.py

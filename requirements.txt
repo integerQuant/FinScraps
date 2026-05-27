@@ -1,4 +1,5 @@
 huggingface_hub
+openpyxl
 pandas
 pyarrow
 requests
