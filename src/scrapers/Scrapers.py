@@ -2,6 +2,10 @@ import time
 import pandas as pd
 import requests
 import xml.etree.ElementTree as ET
+from io import BytesIO
+from functools import reduce
+
+from src.anbima_idka_dataset import IDKA_CODES, validate_dataset
 
 class AnbimaIRTSScraper:
     """A scraper for retrieving and parsing IRTS (Term Structure) data from ANBIMA in XML format.
@@ -101,3 +105,62 @@ class AnbimaIRTSScraper:
         xml_content = self.download_xml(date)
         parametros = self.parse_params(xml_content, date)
         return pd.DataFrame(parametros)
+
+
+class AnbimaIDKAScraper:
+    """A scraper for retrieving and parsing ANBIMA IDKA historical workbooks."""
+
+    BASE_URL = "https://s3-data-prd-use1-precos.s3.us-east-1.amazonaws.com/arquivos/indices-historico"
+    SOURCE_COLUMNS = ["Data de Referência", "Número Índice"]
+
+    def __init__(self):
+        self.urls = {
+            code: f"{self.BASE_URL}/{code}-HISTORICO.xls"
+            for code in IDKA_CODES
+        }
+
+    def download_workbook(self, code: str) -> bytes:
+        """Download one IDKA historical workbook, with simple retry logic."""
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(self.urls[code], timeout=30)
+                response.raise_for_status()
+                return response.content
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                else:
+                    raise e
+
+    def parse_workbook(self, workbook_content: bytes, code: str) -> pd.DataFrame:
+        """Parse an IDKA workbook into a two-column date/value frame."""
+        df = pd.read_excel(
+            BytesIO(workbook_content),
+            sheet_name="Historico",
+            engine="openpyxl",
+            usecols=self.SOURCE_COLUMNS,
+        )
+        parsed = df.rename(
+            columns={
+                "Data de Referência": "date",
+                "Número Índice": code,
+            }
+        )
+        parsed["date"] = pd.to_datetime(parsed["date"], errors="raise").dt.normalize()
+        parsed[code] = pd.to_numeric(parsed[code], errors="raise")
+        return parsed.loc[:, ["date", code]]
+
+    def scrape(self) -> pd.DataFrame:
+        """Download all IDKA workbooks and return the public wide dataset."""
+        series_frames = [
+            self.parse_workbook(self.download_workbook(code), code)
+            for code in IDKA_CODES
+        ]
+
+        wide_df = reduce(
+            lambda left, right: left.merge(right, on="date", how="outer", validate="one_to_one"),
+            series_frames,
+        )
+        wide_df = wide_df.sort_values("date").reset_index(drop=True)
+        return validate_dataset(wide_df)

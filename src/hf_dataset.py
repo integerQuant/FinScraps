@@ -4,8 +4,6 @@ import os
 from pathlib import Path
 
 import pandas as pd
-from huggingface_hub import HfApi, hf_hub_download
-from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
 
 from src.anbima_irts_dataset import DEFAULT_HF_FILENAME, DEFAULT_HF_REPO_ID, write_parquet
 
@@ -15,6 +13,9 @@ def load_latest_dataset(
     filename: str = DEFAULT_HF_FILENAME,
     token: str | None = None,
 ) -> pd.DataFrame:
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
+
     try:
         path = hf_hub_download(
             repo_id=repo_id,
@@ -34,9 +35,12 @@ def upload_latest_dataset(
     filename: str = DEFAULT_HF_FILENAME,
     token: str | None = None,
     workdir: str | Path = "dist",
+    writer=write_parquet,
 ) -> None:
+    from huggingface_hub import HfApi
+
     output_path = Path(workdir) / filename
-    write_parquet(df, output_path)
+    writer(df, output_path)
 
     api = HfApi(token=token or os.environ.get("HF_TOKEN"))
     api.create_repo(repo_id=repo_id, repo_type="dataset", exist_ok=True)
