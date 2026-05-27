@@ -1,4 +1,5 @@
+huggingface_hub
 pandas
-xlrd
-requests
 pyarrow
+requests
+xlrd
