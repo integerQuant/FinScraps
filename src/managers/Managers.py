@@ -1,8 +1,12 @@
-import os
 import logging
-from pathlib import Path
-import pandas as pd
 
+from src.anbima_irts_dataset import (
+    DEFAULT_HF_FILENAME,
+    DEFAULT_HF_REPO_ID,
+    merge_new_rows,
+    validate_dataset,
+)
+from src.hf_dataset import load_latest_dataset, upload_latest_dataset
 from src.scrapers.Scrapers import AnbimaIRTSScraper
 from src.utils import BRCal
 
@@ -13,34 +17,32 @@ class AnbimaIRTSManager:
     A manager for the AnbimaIRTSScraper. Handles the workflow of:
     - Validating the requested date
     - Downloading new data for a given date
-    - Comparing new data with existing data
-    - Appending and storing the latest data into a Feather file
+    - Comparing new data with the latest Hugging Face dataset
+    - Appending and uploading the latest Parquet blob
     """
 
     def __init__(
         self,
-        data_directory: str = "data/scraped/anbima",
-        feather_filename: str = "irts_params.feather",
+        hf_repo_id: str = DEFAULT_HF_REPO_ID,
+        hf_filename: str = DEFAULT_HF_FILENAME,
     ):
         """
         Parameters
         ----------
-        data_directory : str
-            Path to the directory where Feather files are stored.
-        feather_filename : str
-            Name of the Feather file to be updated with new data.
+        hf_repo_id : str
+            Hugging Face Dataset repo that stores the latest Parquet blob.
+        hf_filename : str
+            Dataset filename inside the Hugging Face repo.
         """
         self.scraper = AnbimaIRTSScraper()
-        self.data_directory = Path(data_directory)
-        self.feather_filename = feather_filename
-        self.data_directory.mkdir(parents=True, exist_ok=True)
+        self.hf_repo_id = hf_repo_id
+        self.hf_filename = hf_filename
         self.calendar = BRCal()
 
         self.logger = logging.getLogger(self.__class__.__name__)
 
     def scrape_and_update(self, date):
-        """Download and parse the IRTS data for a given date, then merge
-        it into existing dataset (if any), and store it in Feather format.
+        """Download and parse IRTS data, then update the Hugging Face latest blob.
 
         Parameters
         ----------
@@ -54,30 +56,15 @@ class AnbimaIRTSManager:
         if not self._validate_date(date):
             return False
 
-        feather_path = self.data_directory / self.feather_filename
-        if feather_path.exists():
-            existing_df = pd.read_feather(feather_path)
-            existing_nrows = existing_df.shape[0]
-            self.logger.info(
-                f"Existing dataset loaded with {existing_nrows} rows."
-            )
+        existing_df = load_latest_dataset(self.hf_repo_id, self.hf_filename)
+        if existing_df.empty:
+            self.logger.info("No existing Hugging Face dataset found. Creating a new one.")
         else:
-            self.logger.info("No existing Feather file found. Creating a new one.")
-            existing_df = pd.DataFrame()
-
-        if not existing_df.empty and "date" in existing_df.columns:
+            existing_df = validate_dataset(existing_df)
             if date in existing_df["date"].unique():
-                self.logger.info(
-                    f"Data for date {date.date()} is already present. Skipping scrape."
-                )
+                self.logger.info(f"Data for date {date.date()} is already present. Skipping scrape.")
                 return False
-            
-        elif not existing_df.empty:
-
-            self.logger.warning(
-                "Existing DataFrame does not have 'date' column. "
-                "Cannot check for duplicates by date."
-            )
+            self.logger.info(f"Existing dataset loaded with {existing_df.shape[0]} rows.")
 
         self.logger.info(f"Starting data scrape for date: {date}...")
         try:
@@ -91,12 +78,15 @@ class AnbimaIRTSManager:
             f"New data fetched for date {date.date()}: {new_nrows} rows"
         )
 
-        combined_df = pd.concat([existing_df, new_data], ignore_index=True)
-        combined_df.drop_duplicates(inplace=True) 
-        combined_df.sort_values("date", inplace=True, ascending=True)
-        combined_df.reset_index(drop=True, inplace=True)
-        combined_df.to_feather(feather_path, compression=None)
-        self.logger.info(f"Combined dataset saved to {feather_path} with {combined_df.shape[0]} rows.")
+        combined_df, added_rows = merge_new_rows(existing_df, new_data)
+        if added_rows == 0:
+            self.logger.info(f"No new rows for date {date.date()}. Skipping upload.")
+            return False
+
+        upload_latest_dataset(combined_df, self.hf_repo_id, self.hf_filename)
+        self.logger.info(
+            f"Uploaded {self.hf_repo_id}/{self.hf_filename} with {combined_df.shape[0]} rows."
+        )
 
         return True
 
