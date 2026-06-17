@@ -20,6 +20,9 @@ from src.utils import BRCal
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(asctime)s - %(name)s - %(message)s")
 
+DEFAULT_IRTS_LOOKBACK_BUSINESS_DAYS = 5
+
+
 class AnbimaIRTSManager:
     """
     A manager for the AnbimaIRTSScraper. Handles the workflow of:
@@ -49,46 +52,51 @@ class AnbimaIRTSManager:
 
         self.logger = logging.getLogger(self.__class__.__name__)
 
-    def scrape_and_update(self, date):
-        """Download and parse IRTS data, then update the Hugging Face latest blob.
-
-        Parameters
-        ----------
-        date : datetime or datetime-like
-        Returns
-        -------
-        pd.DataFrame or None
-            DataFrame containing the merged dataset (old + new) if scraping is done;
-            None if skipped due to invalid date or data already present.
-        """
+    def scrape_and_update(self, date, lookback_business_days=DEFAULT_IRTS_LOOKBACK_BUSINESS_DAYS):
+        """Download and parse missing recent IRTS data, then update Hugging Face."""
+        date = pd.Timestamp(date).normalize()
         if not self._validate_date(date):
             return False
 
         existing_df = load_latest_dataset(self.hf_repo_id, self.hf_filename)
         if existing_df.empty:
             self.logger.info("No existing Hugging Face dataset found. Creating a new one.")
+            dates_to_scrape = [date]
         else:
             existing_df = validate_dataset(existing_df)
-            if date in existing_df["date"].unique():
-                self.logger.info(f"Data for date {date.date()} is already present. Skipping scrape.")
-                return False
             self.logger.info(f"Existing dataset loaded with {existing_df.shape[0]} rows.")
+            existing_dates = set(existing_df["date"].unique())
+            dates_to_scrape = [
+                candidate
+                for candidate in self._recent_business_dates(date, lookback_business_days)
+                if candidate not in existing_dates
+            ]
 
-        self.logger.info(f"Starting data scrape for date: {date}...")
-        try:
-            new_data = self.scraper.scrape(date)
-            new_nrows = new_data.shape[0]
-        except Exception as e:
-            self.logger.error(f"Error during scraping: {e}")
-            raise
+        if not dates_to_scrape:
+            self.logger.info(
+                f"No missing IRTS dates found through {date.date()}. Skipping scrape."
+            )
+            return False
 
-        self.logger.info(
-            f"New data fetched for date {date.date()}: {new_nrows} rows"
-        )
+        new_frames = []
+        for scrape_date in dates_to_scrape:
+            self.logger.info(f"Starting data scrape for date: {scrape_date}...")
+            try:
+                new_data = self.scraper.scrape(scrape_date)
+                new_nrows = new_data.shape[0]
+            except Exception as e:
+                self.logger.error(f"Error during scraping: {e}")
+                raise
 
+            self.logger.info(
+                f"New data fetched for date {scrape_date.date()}: {new_nrows} rows"
+            )
+            new_frames.append(new_data)
+
+        new_data = pd.concat(new_frames, ignore_index=True)
         combined_df, added_rows = merge_new_rows(existing_df, new_data)
         if added_rows == 0:
-            self.logger.info(f"No new rows for date {date.date()}. Skipping upload.")
+            self.logger.info("No new IRTS rows found. Skipping upload.")
             return False
 
         upload_latest_dataset(combined_df, self.hf_repo_id, self.hf_filename)
@@ -97,6 +105,15 @@ class AnbimaIRTSManager:
         )
 
         return True
+
+    def _recent_business_dates(self, date, lookback_business_days):
+        date = pd.Timestamp(date).normalize()
+        dates = [date]
+        current = date
+        while len(dates) < lookback_business_days:
+            current = self.calendar.previous_business_day(current)
+            dates.append(pd.Timestamp(current).normalize())
+        return list(reversed(dates))
 
     def _validate_date(self, date):
         """
