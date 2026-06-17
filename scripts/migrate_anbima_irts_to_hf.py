@@ -74,7 +74,7 @@ def main() -> None:
         try:
             from src.hf_dataset import upload_latest_dataset
 
-            upload_latest_dataset(validated_df, repo_id=args.repo_id, filename=args.filename)
+            upload_latest_dataset(validated_df, repo_id=args.repo_id, filename=args.filename, create_repo=True)
         except ImportError:
             subprocess.run(
                 [
